@@ -186,7 +186,7 @@ jobs:
             cd "$RUNNER_TEMP/openssl-${openssl_version}"
             CC="${MUSL_CROSS_PREFIX}gcc" ./Configure "$openssl_target" \
               --prefix="$sysroot" \
-              no-shared no-tests no-apps \
+              shared no-tests no-apps \
               no-argon2 no-aria no-async no-bf no-blake2 no-camellia no-cmp no-cms \
               no-comp no-des no-dh no-dsa no-ec2m no-engine no-gost \
               no-http no-idea no-legacy no-md4 no-mdc2 no-multiblock \

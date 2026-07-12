@@ -19,11 +19,13 @@ case "$ARCH" in
     BUILD_ARCH="x86-64"
     CROSS_ARGS=()
     EXPECTED_MACHINE='Advanced Micro Devices X86-64'
+    MUSL_LOADER='ld-musl-x86_64.so.1'
     ;;
   arm64)
     BUILD_ARCH="arm64"
     CROSS_ARGS=(--cross-tool aarch64-linux-gnu-)
     EXPECTED_MACHINE='AArch64'
+    MUSL_LOADER='ld-musl-aarch64.so.1'
     ;;
   *) usage ;;
 esac
@@ -46,7 +48,19 @@ esac
 PACKAGE_NAME="smartdns-${RELEASE_TAG}-linux-${ARCH}-${VARIANT}"
 BUILD_OUTPUT="$(mktemp -d)"
 PACKAGE_ROOT="$(mktemp -d)"
-trap 'rm -rf "$BUILD_OUTPUT" "$PACKAGE_ROOT"' EXIT
+TEMP_LOADER_LINK=""
+cleanup() {
+  rm -rf "$BUILD_OUTPUT" "$PACKAGE_ROOT"
+  [[ -z "$TEMP_LOADER_LINK" ]] || rm -f "$TEMP_LOADER_LINK"
+}
+trap cleanup EXIT
+
+if [[ "$VARIANT" == "dynamic-ui" ]]; then
+  MUSL_LIBC="$("${MUSL_CROSS_PREFIX}gcc" -print-file-name=libc.so)"
+  [[ -f "$MUSL_LIBC" ]] || { echo "musl libc was not found in the toolchain" >&2; exit 1; }
+  TEMP_LOADER_LINK="$SOURCE_DIR/$MUSL_LOADER"
+  ln -s "$MUSL_LIBC" "$TEMP_LOADER_LINK"
+fi
 
 echo "Building ${PACKAGE_NAME} with the upstream package script"
 (
@@ -103,6 +117,10 @@ if [[ "$VARIANT" == "dynamic-ui" ]]; then
   UI_PLUGIN="$BUNDLED_ROOT/smartdns_ui.so"
   BUNDLED_LIB="$BUNDLED_ROOT/lib"
   WWW_ROOT="$ROOT_DIR/usr/share/smartdns/wwwroot"
+
+  if [[ ! -e "$BUNDLED_LIB/$MUSL_LOADER" && ! -L "$BUNDLED_LIB/$MUSL_LOADER" ]]; then
+    ln -s libc.so "$BUNDLED_LIB/$MUSL_LOADER"
+  fi
 
   [[ -x "$BUNDLED_ROOT/run-smartdns" ]] || { echo "Missing bundled run-smartdns" >&2; exit 1; }
   [[ -x "$SMARTDNS_ELF" ]] || { echo "Missing bundled smartdns executable" >&2; exit 1; }
