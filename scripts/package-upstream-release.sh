@@ -49,9 +49,13 @@ PACKAGE_NAME="smartdns-${RELEASE_TAG}-linux-${ARCH}-${VARIANT}"
 BUILD_OUTPUT="$(mktemp -d)"
 PACKAGE_ROOT="$(mktemp -d)"
 TEMP_LOADER_LINK=""
+TEMP_SSL_LINK=""
+TEMP_CRYPTO_LINK=""
 cleanup() {
   rm -rf "$BUILD_OUTPUT" "$PACKAGE_ROOT"
   [[ -z "$TEMP_LOADER_LINK" ]] || rm -f "$TEMP_LOADER_LINK"
+  [[ -z "$TEMP_SSL_LINK" ]] || rm -f "$TEMP_SSL_LINK"
+  [[ -z "$TEMP_CRYPTO_LINK" ]] || rm -f "$TEMP_CRYPTO_LINK"
 }
 trap cleanup EXIT
 
@@ -60,6 +64,14 @@ if [[ "$VARIANT" == "dynamic-ui" ]]; then
   [[ -f "$MUSL_LIBC" ]] || { echo "musl libc was not found in the toolchain" >&2; exit 1; }
   TEMP_LOADER_LINK="$SOURCE_DIR/$MUSL_LOADER"
   ln -s "$MUSL_LIBC" "$TEMP_LOADER_LINK"
+  MUSL_SYSROOT="$("${MUSL_CROSS_PREFIX}gcc" --print-sysroot)"
+  OPENSSL_LIB_DIR="$(find "$MUSL_SYSROOT" -type f -name libssl.so.3 -exec dirname {} \; -quit)"
+  [[ -n "$OPENSSL_LIB_DIR" ]] || { echo "shared OpenSSL libraries were not found in the toolchain sysroot" >&2; exit 1; }
+  export LDFLAGS="-L$OPENSSL_LIB_DIR ${LDFLAGS:-}"
+  TEMP_SSL_LINK="$SOURCE_DIR/libssl.so.3"
+  TEMP_CRYPTO_LINK="$SOURCE_DIR/libcrypto.so.3"
+  ln -s "$OPENSSL_LIB_DIR/libssl.so.3" "$TEMP_SSL_LINK"
+  ln -s "$OPENSSL_LIB_DIR/libcrypto.so.3" "$TEMP_CRYPTO_LINK"
 fi
 
 echo "Building ${PACKAGE_NAME} with the upstream package script"

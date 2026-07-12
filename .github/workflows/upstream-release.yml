@@ -196,7 +196,6 @@ jobs:
             make -j"$(nproc)"
             make install_sw
           )
-          echo "LIBRARY_PATH=$sysroot/lib:$sysroot/lib64" >> "$GITHUB_ENV"
       - name: Install Rust for UI builds
         if: matrix.variant == 'dynamic-ui'
         uses: dtolnay/rust-toolchain@stable
