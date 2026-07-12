@@ -218,7 +218,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             source/plugin/smartdns-ui/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-smartdns-ui-${{ hashFiles('source/plugin/smartdns-ui/Cargo.lock') }}
+          key: ${{ runner.os }}-ubuntu22.04-${{ matrix.arch }}-smartdns-ui-${{ hashFiles('source/plugin/smartdns-ui/Cargo.lock') }}
       - name: Build, validate, and package
         run: |
           chmod +x automation/scripts/package-upstream-release.sh
