@@ -116,7 +116,7 @@ jobs:
           if [[ "$TARGET_VARIANT" == "dynamic-ui" ]]; then
             packages+=(clang libclang-dev)
           fi
-          if [[ "$TARGET_ARCH" == "arm64" ]]; then
+          if [[ "$TARGET_ARCH" == "arm64" && "$TARGET_VARIANT" == "static" ]]; then
             sudo dpkg --add-architecture arm64
             sudo sed -i '/^Architectures:/d; /^Components:/a Architectures: amd64' \
               /etc/apt/sources.list.d/ubuntu.sources
@@ -132,6 +132,30 @@ jobs:
             packages+=(binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross libssl-dev:arm64 zlib1g-dev:arm64)
           fi
           sudo apt-get install -y --no-install-recommends "${packages[@]}"
+      - name: Install musl cross-toolchain for bundled UI builds
+        if: matrix.variant == 'dynamic-ui'
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_ARCH" in
+            amd64)
+              archive=x86_64-linux-musl-cross.tgz
+              directory=x86_64-linux-musl-cross
+              prefix=x86_64-linux-musl-
+              ;;
+            arm64)
+              archive=aarch64-linux-musl-cross.tgz
+              directory=aarch64-linux-musl-cross
+              prefix=aarch64-linux-musl-
+              ;;
+          esac
+          url="https://github.com/OpenListTeam/musl-compilers/releases/download/2025-06-12/${archive}"
+          toolchain_root="$RUNNER_TEMP/musl-toolchain"
+          mkdir -p "$toolchain_root"
+          wget --tries=3 --timeout=30 -O "$RUNNER_TEMP/$archive" "$url"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$toolchain_root"
+          echo "MUSL_CROSS_PREFIX=$toolchain_root/$directory/bin/$prefix" >> "$GITHUB_ENV"
       - name: Install Rust for UI builds
         if: matrix.variant == 'dynamic-ui'
         uses: dtolnay/rust-toolchain@stable

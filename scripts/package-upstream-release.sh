@@ -30,7 +30,12 @@ esac
 
 case "$VARIANT" in
   dynamic-ui)
-    BUILD_ARGS=(--with-ui)
+    [[ -n "${MUSL_CROSS_PREFIX:-}" ]] || {
+      echo "MUSL_CROSS_PREFIX is required for dynamic-ui builds" >&2
+      exit 1
+    }
+    CROSS_ARGS=(--cross-tool "$MUSL_CROSS_PREFIX")
+    BUILD_ARGS=(--static --with-ui)
     ;;
   static)
     BUILD_ARGS=(--static)
@@ -70,26 +75,48 @@ ROOT_DIR="$PACKAGE_ROOT/smartdns"
 }
 
 SMARTDNS_BIN="$ROOT_DIR/usr/sbin/smartdns"
-[[ -x "$SMARTDNS_BIN" ]] || {
-  echo "Missing executable usr/sbin/smartdns" >&2
+[[ -e "$SMARTDNS_BIN" || -L "$SMARTDNS_BIN" ]] || {
+  echo "Missing usr/sbin/smartdns" >&2
   exit 1
 }
 
-machine="$(readelf -h "$SMARTDNS_BIN" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
+if [[ "$VARIANT" == "dynamic-ui" ]]; then
+  BUNDLED_ROOT="$ROOT_DIR/usr/local/lib/smartdns"
+  [[ -L "$SMARTDNS_BIN" ]] || { echo "usr/sbin/smartdns is not the bundled launcher symlink" >&2; exit 1; }
+  [[ "$(readlink "$SMARTDNS_BIN")" == "/usr/local/lib/smartdns/run-smartdns" ]] || {
+    echo "usr/sbin/smartdns does not point to the bundled launcher" >&2
+    exit 1
+  }
+  SMARTDNS_ELF="$BUNDLED_ROOT/smartdns"
+else
+  [[ -x "$SMARTDNS_BIN" ]] || { echo "usr/sbin/smartdns is not executable" >&2; exit 1; }
+  SMARTDNS_ELF="$SMARTDNS_BIN"
+fi
+
+machine="$(readelf -h "$SMARTDNS_ELF" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
 [[ "$machine" == *"$EXPECTED_MACHINE"* ]] || {
   echo "Unexpected binary architecture: $machine" >&2
   exit 1
 }
 
 if [[ "$VARIANT" == "dynamic-ui" ]]; then
-  UI_PLUGIN="$ROOT_DIR/usr/local/lib/smartdns/smartdns_ui.so"
+  UI_PLUGIN="$BUNDLED_ROOT/smartdns_ui.so"
+  BUNDLED_LIB="$BUNDLED_ROOT/lib"
   WWW_ROOT="$ROOT_DIR/usr/share/smartdns/wwwroot"
 
+  [[ -x "$BUNDLED_ROOT/run-smartdns" ]] || { echo "Missing bundled run-smartdns" >&2; exit 1; }
+  [[ -x "$SMARTDNS_ELF" ]] || { echo "Missing bundled smartdns executable" >&2; exit 1; }
   [[ -f "$UI_PLUGIN" ]] || { echo "Missing smartdns_ui.so" >&2; exit 1; }
+  [[ -L "$BUNDLED_LIB/ld-linux.so" ]] || { echo "Missing bundled ld-linux.so symlink" >&2; exit 1; }
+  compgen -G "$BUNDLED_LIB/ld-musl-*.so.1" >/dev/null || { echo "Missing bundled musl loader" >&2; exit 1; }
+  [[ -f "$BUNDLED_LIB/libc.so" ]] || { echo "Missing bundled libc.so" >&2; exit 1; }
+  [[ -f "$BUNDLED_LIB/libcrypto.so.3" ]] || { echo "Missing bundled libcrypto.so.3" >&2; exit 1; }
+  [[ -f "$BUNDLED_LIB/libssl.so.3" ]] || { echo "Missing bundled libssl.so.3" >&2; exit 1; }
+  [[ -f "$BUNDLED_LIB/libgcc_s.so.1" ]] || { echo "Missing bundled libgcc_s.so.1" >&2; exit 1; }
   [[ -f "$WWW_ROOT/index.html" ]] || { echo "Missing wwwroot/index.html" >&2; exit 1; }
   [[ -f "$ROOT_DIR/etc/smartdns/smartdns.conf" ]] || { echo "Missing example configuration" >&2; exit 1; }
   [[ -f "$ROOT_DIR/systemd/smartdns.service" ]] || { echo "Missing systemd service" >&2; exit 1; }
-  readelf -l "$SMARTDNS_BIN" | grep -q 'INTERP' || {
+  readelf -l "$SMARTDNS_ELF" | grep -q 'INTERP' || {
     echo "Dynamic package binary has no ELF interpreter" >&2
     exit 1
   }
