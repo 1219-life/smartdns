@@ -1,0 +1,195 @@
+name: Sync upstream and publish Linux builds
+
+on:
+  schedule:
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to build (blank uses latest release)"
+        required: false
+        type: string
+      force_rebuild:
+        description: "Replace an existing release with newly built assets"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: smartdns-upstream-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPOSITORY: pymumu/smartdns
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  discover:
+    name: Discover upstream release
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      should_build: ${{ steps.release.outputs.should_build }}
+    steps:
+      - name: Resolve tag and check this repository
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
+          if [[ -z "$tag" ]]; then
+            tag="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq .tag_name)"
+          else
+            gh api "repos/${UPSTREAM_REPOSITORY}/git/ref/tags/${tag}" >/dev/null
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ "$FORCE_REBUILD" == "true" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          elif gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists in $GITHUB_REPOSITORY; skipping."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $tag is new to $GITHUB_REPOSITORY."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  sync:
+    name: Merge upstream default branch
+    needs: discover
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Merge upstream without rewriting fork history
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ needs.discover.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --prune --tags upstream
+          git merge --no-edit upstream/master
+          git push origin "HEAD:${DEFAULT_BRANCH}"
+          git push origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+
+  build:
+    name: ${{ matrix.arch }} / ${{ matrix.variant }}
+    needs: discover
+    if: needs.discover.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        variant: [dynamic-ui, static]
+    steps:
+      - name: Checkout automation
+        uses: actions/checkout@v6
+        with:
+          path: automation
+      - name: Checkout upstream release
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ needs.discover.outputs.tag }}
+          fetch-depth: 0
+          path: source
+      - name: Install build dependencies
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          TARGET_VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          packages=(build-essential file jq libssl-dev nodejs npm pkg-config unzip wget zlib1g-dev)
+          if [[ "$TARGET_VARIANT" == "dynamic-ui" ]]; then
+            packages+=(clang libclang-dev)
+          fi
+          if [[ "$TARGET_ARCH" == "arm64" ]]; then
+            sudo dpkg --add-architecture arm64
+            sudo apt-get update
+            packages+=(binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross libssl-dev:arm64 zlib1g-dev:arm64)
+          fi
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
+      - name: Install Rust for UI builds
+        if: matrix.variant == 'dynamic-ui'
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust build inputs
+        if: matrix.variant == 'dynamic-ui'
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/bindgen
+            ~/.cargo/registry
+            ~/.cargo/git
+            source/plugin/smartdns-ui/target
+          key: ${{ runner.os }}-${{ matrix.arch }}-smartdns-ui-${{ hashFiles('source/plugin/smartdns-ui/Cargo.lock') }}
+      - name: Build, validate, and package
+        run: |
+          chmod +x automation/scripts/package-upstream-release.sh
+          automation/scripts/package-upstream-release.sh \
+            source artifacts "${{ needs.discover.outputs.tag }}" \
+            "${{ matrix.arch }}" "${{ matrix.variant }}"
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: smartdns-${{ matrix.arch }}-${{ matrix.variant }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [discover, sync, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all builds
+        uses: actions/download-artifact@v7
+        with:
+          pattern: smartdns-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate combined checksums and release notes
+        env:
+          RELEASE_TAG: ${{ needs.discover.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum --check ./*.sha256
+          sha256sum ./*.tar.gz > SHA256SUMS
+          cat > RELEASE_NOTES.md <<EOF
+          Automated builds of [pymumu/smartdns ${RELEASE_TAG}](https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${RELEASE_TAG}).
+
+          Assets:
+          - Linux AMD64, dynamically linked, with SmartDNS UI
+          - Linux ARM64, dynamically linked, with SmartDNS UI
+          - Linux AMD64, statically linked
+          - Linux ARM64, statically linked
+
+          Every archive contains a \`manifest.json\`. Verify downloads with \`sha256sum -c SHA256SUMS\`.
+          EOF
+      - name: Create or replace release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.discover.outputs.tag }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            [[ "$FORCE_REBUILD" == "true" ]] || exit 0
+            gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes
+          fi
+          gh release create "$RELEASE_TAG" release-assets/*.tar.gz release-assets/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$RELEASE_TAG Linux builds" \
+            --notes-file release-assets/RELEASE_NOTES.md
