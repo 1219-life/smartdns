@@ -87,7 +87,7 @@ jobs:
     name: ${{ matrix.arch }} / ${{ matrix.variant }}
     needs: discover
     if: needs.discover.outputs.should_build == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
