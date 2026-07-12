@@ -118,16 +118,26 @@ jobs:
           fi
           if [[ "$TARGET_ARCH" == "arm64" && "$TARGET_VARIANT" == "static" ]]; then
             sudo dpkg --add-architecture arm64
-            sudo sed -i '/^Architectures:/d; /^Components:/a Architectures: amd64' \
-              /etc/apt/sources.list.d/ubuntu.sources
-            printf '%s\n' \
-              'Types: deb' \
-              'URIs: http://ports.ubuntu.com/ubuntu-ports' \
-              'Suites: noble noble-updates noble-backports noble-security' \
-              'Components: main universe restricted multiverse' \
-              'Architectures: arm64' \
-              'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
-              | sudo tee /etc/apt/sources.list.d/ubuntu-ports.sources >/dev/null
+            if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+              sudo sed -i '/^Architectures:/d; /^Components:/a Architectures: amd64' \
+                /etc/apt/sources.list.d/ubuntu.sources
+              printf '%s\n' \
+                'Types: deb' \
+                'URIs: http://ports.ubuntu.com/ubuntu-ports' \
+                'Suites: noble noble-updates noble-backports noble-security' \
+                'Components: main universe restricted multiverse' \
+                'Architectures: arm64' \
+                'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+                | sudo tee /etc/apt/sources.list.d/ubuntu-ports.sources >/dev/null
+            else
+              sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+              printf '%s\n' \
+                'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe restricted multiverse' \
+                'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe restricted multiverse' \
+                'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main universe restricted multiverse' \
+                'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe restricted multiverse' \
+                | sudo tee /etc/apt/sources.list.d/ubuntu-ports.list >/dev/null
+            fi
             sudo apt-get update
             packages+=(binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross libssl-dev:arm64 zlib1g-dev:arm64)
           fi
