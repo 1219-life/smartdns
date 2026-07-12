@@ -2,7 +2,8 @@ name: Sync upstream and publish Linux builds
 
 on:
   schedule:
-    - cron: "17 18 * * *"
+    # GitHub Actions cron uses UTC; 16:00 UTC is 00:00 Asia/Shanghai.
+    - cron: "0 16 * * *"
   workflow_dispatch:
     inputs:
       tag:
