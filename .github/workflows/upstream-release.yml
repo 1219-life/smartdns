@@ -87,7 +87,7 @@ jobs:
     name: ${{ matrix.arch }} / ${{ matrix.variant }}
     needs: discover
     if: needs.discover.outputs.should_build == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -116,22 +116,96 @@ jobs:
           if [[ "$TARGET_VARIANT" == "dynamic-ui" ]]; then
             packages+=(clang libclang-dev)
           fi
-          if [[ "$TARGET_ARCH" == "arm64" ]]; then
+          if [[ "$TARGET_ARCH" == "arm64" && "$TARGET_VARIANT" == "static" ]]; then
             sudo dpkg --add-architecture arm64
-            sudo sed -i '/^Architectures:/d; /^Components:/a Architectures: amd64' \
-              /etc/apt/sources.list.d/ubuntu.sources
-            printf '%s\n' \
-              'Types: deb' \
-              'URIs: http://ports.ubuntu.com/ubuntu-ports' \
-              'Suites: noble noble-updates noble-backports noble-security' \
-              'Components: main universe restricted multiverse' \
-              'Architectures: arm64' \
-              'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
-              | sudo tee /etc/apt/sources.list.d/ubuntu-ports.sources >/dev/null
+            if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+              sudo sed -i '/^Architectures:/d; /^Components:/a Architectures: amd64' \
+                /etc/apt/sources.list.d/ubuntu.sources
+              printf '%s\n' \
+                'Types: deb' \
+                'URIs: http://ports.ubuntu.com/ubuntu-ports' \
+                'Suites: noble noble-updates noble-backports noble-security' \
+                'Components: main universe restricted multiverse' \
+                'Architectures: arm64' \
+                'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+                | sudo tee /etc/apt/sources.list.d/ubuntu-ports.sources >/dev/null
+            else
+              sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+              printf '%s\n' \
+                'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe restricted multiverse' \
+                'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe restricted multiverse' \
+                'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main universe restricted multiverse' \
+                'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe restricted multiverse' \
+                | sudo tee /etc/apt/sources.list.d/ubuntu-ports.list >/dev/null
+            fi
             sudo apt-get update
             packages+=(binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu libc6-dev-arm64-cross libssl-dev:arm64 zlib1g-dev:arm64)
           fi
           sudo apt-get install -y --no-install-recommends "${packages[@]}"
+      - name: Install musl cross-toolchain for bundled UI builds
+        if: matrix.variant == 'dynamic-ui'
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_ARCH" in
+            amd64)
+              archive=x86_64-linux-musl-cross.tgz
+              directory=x86_64-linux-musl-cross
+              source_prefix=x86_64-linux-musl
+              target_prefix=x86_64-unknown-linux-musl
+              ;;
+            arm64)
+              archive=aarch64-linux-musl-cross.tgz
+              directory=aarch64-linux-musl-cross
+              source_prefix=aarch64-linux-musl
+              target_prefix=aarch64-unknown-linux-musl
+              ;;
+          esac
+          url="https://github.com/OpenListTeam/musl-compilers/releases/download/2025-06-12/${archive}"
+          toolchain_root="$RUNNER_TEMP/musl-toolchain"
+          mkdir -p "$toolchain_root"
+          wget --tries=3 --timeout=30 -O "$RUNNER_TEMP/$archive" "$url"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$toolchain_root"
+          ln -s "$directory" "$toolchain_root/$target_prefix"
+          for command in "$toolchain_root/$directory/bin/$source_prefix"-*; do
+            command_name="$(basename "$command")"
+            alias_name="${command_name/$source_prefix/$target_prefix}"
+            ln -s "$command" "$toolchain_root/$directory/bin/$alias_name"
+          done
+          ln -s "${source_prefix}-objdump" "$toolchain_root/$directory/bin/objdump"
+          echo "MUSL_CROSS_PREFIX=$toolchain_root/$target_prefix/bin/$target_prefix-" >> "$GITHUB_ENV"
+      - name: Build OpenSSL for bundled UI builds
+        if: matrix.variant == 'dynamic-ui'
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_ARCH" in
+            amd64) openssl_target=linux-x86_64 ;;
+            arm64) openssl_target=linux-aarch64 ;;
+          esac
+          openssl_version=3.5.4
+          archive="$RUNNER_TEMP/openssl-${openssl_version}.tar.gz"
+          wget --tries=3 --timeout=30 \
+            -O "$archive" \
+            "https://github.com/openssl/openssl/releases/download/openssl-${openssl_version}/openssl-${openssl_version}.tar.gz"
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          sysroot="$("${MUSL_CROSS_PREFIX}gcc" --print-sysroot)"
+          (
+            cd "$RUNNER_TEMP/openssl-${openssl_version}"
+            CC="${MUSL_CROSS_PREFIX}gcc" ./Configure "$openssl_target" \
+              --prefix="$sysroot" \
+              shared no-tests no-apps \
+              no-argon2 no-aria no-async no-bf no-blake2 no-camellia no-cmp no-cms \
+              no-comp no-des no-dh no-dsa no-ec2m no-engine no-gost \
+              no-http no-idea no-legacy no-md4 no-mdc2 no-multiblock \
+              no-nextprotoneg no-ocb no-ocsp no-rc2 no-rc4 no-rmd160 \
+              no-scrypt no-seed no-siphash no-siv no-sm2 no-sm3 no-sm4 \
+              no-srp no-srtp no-ts no-whirlpool no-ssl-trace no-ssl no-ssl3 -Os
+            make -j"$(nproc)"
+            make install_sw
+          )
       - name: Install Rust for UI builds
         if: matrix.variant == 'dynamic-ui'
         uses: dtolnay/rust-toolchain@stable
@@ -144,7 +218,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             source/plugin/smartdns-ui/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-smartdns-ui-${{ hashFiles('source/plugin/smartdns-ui/Cargo.lock') }}
+          key: ${{ runner.os }}-ubuntu22.04-${{ matrix.arch }}-smartdns-ui-${{ hashFiles('source/plugin/smartdns-ui/Cargo.lock') }}
       - name: Build, validate, and package
         run: |
           chmod +x automation/scripts/package-upstream-release.sh
